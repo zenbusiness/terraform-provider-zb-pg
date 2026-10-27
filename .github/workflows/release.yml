@@ -1,6 +1,6 @@
 # Publish a tag of this private repository.
 #
-# Pushing a tag that matches v* (for example v1.26.0-zb.1) builds and signs
+# Pushing a tag that matches v* (for example v1.0.0) builds and signs
 # the provider with GoReleaser, creates a GitHub Release, and uploads that
 # release to the HCP Terraform private registry.
 #
@@ -18,8 +18,13 @@
 #   PASSPHRASE                  Passphrase for that key.
 #   HCP_TERRAFORM_TOKEN         Token for a team that can manage the private registry.
 #
-# Tag versions must not reuse an upstream release version. A rebuilt upstream
-# v1.26.0 has different checksums than the public provider.
+# Version numbers are this provider's own line, starting at v1.0.0.
+# Do not tag a cyrilgdn version such as v1.26.0. Those checksums differ
+# from the public provider.
+#
+# GORELEASER_CURRENT_TAG is the tag that triggered the workflow. Older tags
+# can point at the same commit, and GoReleaser otherwise picks the highest
+# version on that commit.
 #
 name: release
 on:
@@ -82,6 +87,7 @@ jobs:
         env:
           GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
   publish-hcp:
     needs: goreleaser
     runs-on: ubuntu-latest
