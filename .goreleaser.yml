@@ -20,13 +20,17 @@ builds:
     - -trimpath
   ldflags:
     - '-s -w -X main.version={{.Version}} -X main.commit={{.Commit}}'
-  # linux and darwin, 64-bit only. HCP Terraform runs on linux/amd64.
+  # 64-bit only: linux/amd64 (Atlantis and CI), darwin/amd64 and darwin/arm64
+  # (developer laptops). There is no linux/arm64 build.
   goos:
     - linux
     - darwin
   goarch:
     - amd64
     - arm64
+  ignore:
+    - goos: linux
+      goarch: arm64
   binary: '{{ .ProjectName }}_v{{ .Version }}'
 archives:
 - formats:
