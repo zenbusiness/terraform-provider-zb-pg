@@ -110,4 +110,4 @@ jobs:
           HCP_TERRAFORM_TOKEN: ${{ secrets.HCP_TERRAFORM_TOKEN }}
           HCP_TERRAFORM_ORGANIZATION: ${{ vars.HCP_TERRAFORM_ORGANIZATION }}
           HCP_TERRAFORM_HOSTNAME: ${{ vars.HCP_TERRAFORM_HOSTNAME }}
-        run: bash .github/scripts/publish-hcp-provider.sh
+        run: python3 .github/scripts/publish_hcp_provider.py
