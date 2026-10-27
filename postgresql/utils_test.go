@@ -95,6 +95,44 @@ func dbExecute(t *testing.T, dsn, query string, args ...any) {
 	}
 }
 
+// forceDropMinVersionNum is PostgreSQL 13, the first release with
+// DROP DATABASE ... WITH (FORCE).
+const forceDropMinVersionNum = 130000
+
+// dropDatabaseStatement returns the statement that drops dbName on a server
+// whose server_version_num is versionNum. From PostgreSQL 13 it adds
+// WITH (FORCE), which disconnects sessions that are still open on the
+// database. The provider keeps idle pooled connections on those versions, so
+// a plain DROP DATABASE fails with "is being accessed by other users".
+func dropDatabaseStatement(versionNum int, dbName string) string {
+	query := fmt.Sprintf("DROP DATABASE IF EXISTS %s", dbName)
+	if versionNum >= forceDropMinVersionNum {
+		query += " WITH (FORCE)"
+	}
+
+	return query
+}
+
+// dropTestDatabase drops a database created by setupTestDatabase, forcing
+// open sessions closed where the server supports it.
+func dropTestDatabase(t *testing.T, config Config, dbName string) {
+	db, err := sql.Open("postgres", config.connStr("postgres"))
+	if err != nil {
+		t.Fatalf("could not create connection pool: %v", err)
+	}
+	defer closeDB(t, db)
+
+	var versionNum int
+	if err := db.QueryRow("SELECT current_setting('server_version_num')::int").Scan(&versionNum); err != nil {
+		t.Fatalf("could not read server version: %v", err)
+	}
+
+	query := dropDatabaseStatement(versionNum, dbName)
+	if _, err := db.Exec(query); err != nil {
+		t.Fatalf("could not execute query %s: %v", query, err)
+	}
+}
+
 func getTestDBNames(dbSuffix string) (dbName string, roleName string) {
 	dbName = fmt.Sprintf("%s_%s", dbNamePrefix, dbSuffix)
 	roleName = fmt.Sprintf("%s_%s", roleNamePrefix, dbSuffix)
@@ -128,7 +166,7 @@ func setupTestDatabase(t *testing.T, createDB, createRole bool) (string, func())
 	}
 
 	return suffix, func() {
-		dbExecute(t, config.connStr("postgres"), fmt.Sprintf("DROP DATABASE IF EXISTS %s", dbName))
+		dropTestDatabase(t, config, dbName)
 		dbExecute(t, config.connStr("postgres"), fmt.Sprintf("DROP ROLE IF EXISTS %s", roleName))
 	}
 }
