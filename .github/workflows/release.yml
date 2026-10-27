@@ -57,15 +57,15 @@ jobs:
           fi
       -
         name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       -
         name: Unshallow
         run: git fetch --prune --unshallow
       -
         name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
-          go-version: '1.24'
+          go-version: '1.26'
       -
         name: Import GPG key
         id: import_gpg
@@ -75,7 +75,7 @@ jobs:
         run: bash .github/scripts/import-gpg.sh
       -
         name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           version: '~> v2'
           args: release --clean
@@ -89,7 +89,7 @@ jobs:
     steps:
       -
         name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       -
         name: Download release assets
         env:
