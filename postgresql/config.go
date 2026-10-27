@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -224,6 +225,22 @@ func (c *Config) featureSupported(name featureName) bool {
 	return fn(c.ExpectedVersion)
 }
 
+// idleConnLimit is how many idle connections the pool may keep.
+// PostgreSQL 13 and newer can DROP DATABASE WITH FORCE, so an idle connection
+// does not block deleting a database the provider manages. Older servers still
+// use a zero idle limit so a connection is never held open across that drop.
+func idleConnLimit(version semver.Version, maxConns int) int {
+	db := &DBConnection{version: version}
+	if db.featureSupported(featureForceDropDatabase) {
+		// Connections can be forcefully closed when dropping a database.
+		return maxConns
+	}
+	// We don't want to retain connection
+	// So when we connect on a specific database which might be managed by terraform,
+	// we don't keep opened connection in case of the db has to be dropped in the plan.
+	return 0
+}
+
 func (c *Config) connParams() []string {
 	params := map[string]string{}
 
@@ -249,9 +266,18 @@ func (c *Config) connParams() []string {
 		params["sslrootcert"] = c.SSLRootCertPath
 	}
 
-	paramsArray := []string{}
-	for key, value := range params {
-		paramsArray = append(paramsArray, fmt.Sprintf("%s=%s", key, url.QueryEscape(value)))
+	// Sort keys so the DSN, and therefore the connection-pool cache key, is
+	// stable. Map iteration order would otherwise open extra pools for the
+	// same database.
+	keys := make([]string, 0, len(params))
+	for key := range params {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	paramsArray := make([]string, 0, len(keys))
+	for _, key := range keys {
+		paramsArray = append(paramsArray, fmt.Sprintf("%s=%s", key, url.QueryEscape(params[key])))
 	}
 
 	return paramsArray
@@ -307,10 +333,6 @@ func (c *Client) Connect() (*DBConnection, error) {
 		return nil, err
 	}
 
-	// We don't want to retain connection
-	// So when we connect on a specific database which might be managed by terraform,
-	// we don't keep opened connection in case of the db has to be dropped in the plan.
-	db.SetMaxIdleConns(0)
 	db.SetMaxOpenConns(c.config.MaxConns)
 	db.SetConnMaxLifetime(time.Duration(c.config.ConnMaxLifetimeSeconds) * time.Second)
 
@@ -330,6 +352,7 @@ func (c *Client) Connect() (*DBConnection, error) {
 		c,
 		*version,
 	}
+	db.SetMaxIdleConns(idleConnLimit(conn.version, c.config.MaxConns))
 
 	dbRegistryLock.Lock()
 	defer dbRegistryLock.Unlock()

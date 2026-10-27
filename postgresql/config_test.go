@@ -75,6 +75,50 @@ func TestConfigConnStr(t *testing.T) {
 	}
 }
 
+func TestConfigConnParamsStableSortedOrder(t *testing.T) {
+	input := &Config{
+		Scheme:            "postgres",
+		SSLMode:           "require",
+		ConnectTimeoutSec: 10,
+		ExpectedVersion:   semver.MustParse("14.0.0"),
+		ApplicationName:   "Terraform provider",
+		SSLRootCertPath:   "/path/to/root.pem",
+		SSLClientCert: &ClientCertificateConfig{
+			CertificatePath: "/path/to/public-certificate.pem",
+			KeyPath:         "/path/to/private-key.pem",
+			SSLInline:       true,
+		},
+	}
+	want := []string{
+		"connect_timeout=10",
+		"fallback_application_name=Terraform+provider",
+		"sslcert=%2Fpath%2Fto%2Fpublic-certificate.pem",
+		"sslinline=true",
+		"sslkey=%2Fpath%2Fto%2Fprivate-key.pem",
+		"sslmode=require",
+		"sslrootcert=%2Fpath%2Fto%2Froot.pem",
+	}
+
+	for i := 0; i < 20; i++ {
+		got := input.connParams()
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("call %d returned %#v, want %#v", i, got, want)
+		}
+	}
+}
+
+func TestIdleConnLimitKeepsConnectionsWhenForceDropExists(t *testing.T) {
+	if got := idleConnLimit(semver.MustParse("12.9.0"), 4); got != 0 {
+		t.Fatalf("postgres 12 idle limit = %d, want 0", got)
+	}
+	if got := idleConnLimit(semver.MustParse("13.0.0"), 4); got != 4 {
+		t.Fatalf("postgres 13 idle limit = %d, want 4", got)
+	}
+	if got := idleConnLimit(semver.MustParse("18.1.0"), 1); got != 1 {
+		t.Fatalf("postgres 18 idle limit = %d, want 1", got)
+	}
+}
+
 // flakyPingDriver is a fake database/sql/driver.Driver whose connections fail
 // to Ping a configurable number of times before succeeding, used to exercise
 // Client.connectWithRetry without a real PostgreSQL server.
