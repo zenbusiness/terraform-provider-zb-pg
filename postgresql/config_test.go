@@ -1,9 +1,14 @@
 package postgresql
 
 import (
+	"context"
+	"database/sql"
+	"database/sql/driver"
+	"errors"
 	"reflect"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/blang/semver"
@@ -67,5 +72,117 @@ func TestConfigConnStr(t *testing.T) {
 			t.Errorf("Config.connStr(%+v) returned %#v, want %#v", test.input, connParams, test.wantDbParams)
 		}
 
+	}
+}
+
+func TestConfigConnParamsStableSortedOrder(t *testing.T) {
+	input := &Config{
+		Scheme:            "postgres",
+		SSLMode:           "require",
+		ConnectTimeoutSec: 10,
+		ExpectedVersion:   semver.MustParse("14.0.0"),
+		ApplicationName:   "Terraform provider",
+		SSLRootCertPath:   "/path/to/root.pem",
+		SSLClientCert: &ClientCertificateConfig{
+			CertificatePath: "/path/to/public-certificate.pem",
+			KeyPath:         "/path/to/private-key.pem",
+			SSLInline:       true,
+		},
+	}
+	want := []string{
+		"connect_timeout=10",
+		"fallback_application_name=Terraform+provider",
+		"sslcert=%2Fpath%2Fto%2Fpublic-certificate.pem",
+		"sslinline=true",
+		"sslkey=%2Fpath%2Fto%2Fprivate-key.pem",
+		"sslmode=require",
+		"sslrootcert=%2Fpath%2Fto%2Froot.pem",
+	}
+
+	for i := 0; i < 20; i++ {
+		got := input.connParams()
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("call %d returned %#v, want %#v", i, got, want)
+		}
+	}
+}
+
+func TestIdleConnLimitKeepsConnectionsWhenForceDropExists(t *testing.T) {
+	if got := idleConnLimit(semver.MustParse("12.9.0"), 4); got != 0 {
+		t.Fatalf("postgres 12 idle limit = %d, want 0", got)
+	}
+	if got := idleConnLimit(semver.MustParse("13.0.0"), 4); got != 4 {
+		t.Fatalf("postgres 13 idle limit = %d, want 4", got)
+	}
+	if got := idleConnLimit(semver.MustParse("18.1.0"), 1); got != 1 {
+		t.Fatalf("postgres 18 idle limit = %d, want 1", got)
+	}
+}
+
+// flakyPingDriver is a fake database/sql/driver.Driver whose connections fail
+// to Ping a configurable number of times before succeeding, used to exercise
+// Client.connectWithRetry without a real PostgreSQL server.
+type flakyPingDriver struct {
+	failuresBeforeSuccess int32
+	attempts              atomic.Int32
+}
+
+func (d *flakyPingDriver) Open(name string) (driver.Conn, error) {
+	return &flakyPingConn{driver: d}, nil
+}
+
+type flakyPingConn struct {
+	driver *flakyPingDriver
+}
+
+func (c *flakyPingConn) Prepare(query string) (driver.Stmt, error) { return nil, driver.ErrSkip }
+func (c *flakyPingConn) Close() error                              { return nil }
+func (c *flakyPingConn) Begin() (driver.Tx, error)                 { return nil, driver.ErrSkip }
+
+func (c *flakyPingConn) Ping(ctx context.Context) error {
+	attempt := c.driver.attempts.Add(1)
+	if attempt <= c.driver.failuresBeforeSuccess {
+		return errors.New("connection refused")
+	}
+	return nil
+}
+
+func newFlakyClient(driverName string, drv *flakyPingDriver, maxConnRetries, timeoutSeconds int) *Client {
+	sql.Register(driverName, drv)
+	return &Client{
+		config: Config{
+			Scheme:                        "postgres",
+			MaxConnRetries:                maxConnRetries,
+			ConnectionRetryTimeoutSeconds: timeoutSeconds,
+		},
+	}
+}
+
+func TestConnectWithRetrySucceedsAfterTransientFailures(t *testing.T) {
+	drv := &flakyPingDriver{failuresBeforeSuccess: 2}
+	c := newFlakyClient("flaky-retry-success", drv, 5, 5)
+
+	db, err := c.connectWithRetry(context.Background(), "flaky-retry-success", "dsn")
+	if err != nil {
+		t.Fatalf("connectWithRetry() returned unexpected error: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	if got := drv.attempts.Load(); got != 3 {
+		t.Errorf("expected 3 connection attempts (2 failures + 1 success), got %d", got)
+	}
+}
+
+func TestConnectWithRetryGivesUpAfterMaxConnRetries(t *testing.T) {
+	drv := &flakyPingDriver{failuresBeforeSuccess: 100}
+	c := newFlakyClient("flaky-retry-exhausted", drv, 3, 30)
+
+	_, err := c.connectWithRetry(context.Background(), "flaky-retry-exhausted", "dsn")
+	if err == nil {
+		t.Fatal("connectWithRetry() expected an error, got nil")
+	}
+
+	if got := drv.attempts.Load(); got != 4 {
+		t.Errorf("expected exactly 4 connection attempts (1 initial + MaxConnRetries), got %d", got)
 	}
 }

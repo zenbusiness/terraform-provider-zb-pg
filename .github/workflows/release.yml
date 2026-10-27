@@ -1,47 +1,76 @@
-# This GitHub action can publish assets for release when a tag is created.
-# Currently its setup to run on any tag that matches the pattern "v*" (ie. v0.1.0).
+# Publish a tag of this repository to the public Terraform Registry.
 #
-# This uses an action (paultyng/ghaction-import-gpg) that assumes you set your 
-# private key in the `GPG_PRIVATE_KEY` secret and passphrase in the `PASSPHRASE`
-# secret. If you would rather own your own GPG handling, please fork this action
-# or use an alternative one for key handling.
+# Pushing a tag that matches v* (for example v1.0.0) builds and signs the
+# provider with GoReleaser and creates a GitHub Release. The Terraform
+# Registry receives a webhook for that release and ingests it as
+# registry.terraform.io/zenbusiness/zb-pg.
 #
-# You will need to pass the `--batch` flag to `gpg` in your signing step 
-# in `goreleaser` to indicate this is being used in a non-interactive mode.
+# Secrets, preferably on the publish environment:
+#   GPG_PRIVATE_KEY   ASCII-armored private key used to sign checksums. Its
+#                     public key must be added to the zenbusiness namespace
+#                     in the Terraform Registry.
+#   PASSPHRASE        Passphrase for that key.
+#
+# Version numbers are this provider's own line, starting at v1.0.0.
+# Do not tag a cyrilgdn version such as v1.26.0.
+#
+# GORELEASER_CURRENT_TAG is the tag that triggered the workflow. Older tags
+# can point at the same commit, and GoReleaser otherwise picks the highest
+# version on that commit.
 #
 name: release
 on:
   push:
     tags:
       - 'v*'
+permissions:
+  contents: write
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
+    environment: publish
     steps:
       -
+        name: Check release configuration
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          PASSPHRASE: ${{ secrets.PASSPHRASE }}
+        run: |
+          missing=0
+          for name in GPG_PRIVATE_KEY PASSPHRASE; do
+            if [ -z "${!name}" ]; then
+              echo "Missing secret: ${name}"
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            exit 1
+          fi
+      -
         name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       -
         name: Unshallow
         run: git fetch --prune --unshallow
       -
         name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
-          go-version: '1.24'
+          go-version: '1.26'
       -
         name: Import GPG key
         id: import_gpg
-        uses: crazy-max/ghaction-import-gpg@v6.1.0
-        with:
-          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
-          passphrase: ${{ secrets.PASSPHRASE }}
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          PASSPHRASE: ${{ secrets.PASSPHRASE }}
+        run: bash .github/scripts/import-gpg.sh
       -
         name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
-          version: latest
+          version: '~> v2'
           args: release --clean
         env:
           GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
