@@ -1,26 +1,18 @@
-# Publish a tag of this private repository.
+# Publish a tag of this repository to the public Terraform Registry.
 #
-# Pushing a tag that matches v* (for example v1.0.0) builds and signs
-# the provider with GoReleaser, creates a GitHub Release, and uploads that
-# release to the HCP Terraform private registry.
-#
-# This workflow belongs only in the private repository. Do not push it to
-# zenbusiness/terraform-provider-postgresql-contrib.
-#
-# Repository variable:
-#   HCP_TERRAFORM_ORGANIZATION  HCP Terraform organization. The repository is
-#                               created with the placeholder REPLACE_ME.
-#                               Publishing fails until it is replaced.
-#   HCP_TERRAFORM_HOSTNAME      Optional. Defaults to app.terraform.io.
+# Pushing a tag that matches v* (for example v1.0.0) builds and signs the
+# provider with GoReleaser and creates a GitHub Release. The Terraform
+# Registry receives a webhook for that release and ingests it as
+# registry.terraform.io/zenbusiness/zb-pg.
 #
 # Secrets, preferably on the publish environment:
-#   GPG_PRIVATE_KEY             ASCII-armored private key used to sign checksums.
-#   PASSPHRASE                  Passphrase for that key.
-#   HCP_TERRAFORM_TOKEN         Token for a team that can manage the private registry.
+#   GPG_PRIVATE_KEY   ASCII-armored private key used to sign checksums. Its
+#                     public key must be added to the zenbusiness namespace
+#                     in the Terraform Registry.
+#   PASSPHRASE        Passphrase for that key.
 #
 # Version numbers are this provider's own line, starting at v1.0.0.
-# Do not tag a cyrilgdn version such as v1.26.0. Those checksums differ
-# from the public provider.
+# Do not tag a cyrilgdn version such as v1.26.0.
 #
 # GORELEASER_CURRENT_TAG is the tag that triggered the workflow. Older tags
 # can point at the same commit, and GoReleaser otherwise picks the highest
@@ -41,17 +33,11 @@ jobs:
       -
         name: Check release configuration
         env:
-          HCP_TERRAFORM_ORGANIZATION: ${{ vars.HCP_TERRAFORM_ORGANIZATION }}
-          HCP_TERRAFORM_TOKEN: ${{ secrets.HCP_TERRAFORM_TOKEN }}
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           PASSPHRASE: ${{ secrets.PASSPHRASE }}
         run: |
           missing=0
-          if [ -z "${HCP_TERRAFORM_ORGANIZATION}" ] || [ "${HCP_TERRAFORM_ORGANIZATION}" = "REPLACE_ME" ]; then
-            echo "Set the HCP_TERRAFORM_ORGANIZATION repository variable. It is still empty or REPLACE_ME."
-            missing=1
-          fi
-          for name in HCP_TERRAFORM_TOKEN GPG_PRIVATE_KEY PASSPHRASE; do
+          for name in GPG_PRIVATE_KEY PASSPHRASE; do
             if [ -z "${!name}" ]; then
               echo "Missing secret: ${name}"
               missing=1
@@ -88,32 +74,3 @@ jobs:
           GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
-  publish-hcp:
-    needs: goreleaser
-    runs-on: ubuntu-latest
-    environment: publish
-    steps:
-      -
-        name: Checkout
-        uses: actions/checkout@v6
-      -
-        name: Download release assets
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release download "${GITHUB_REF_NAME}" --dir dist --clobber
-      -
-        name: Import GPG key
-        id: import_gpg
-        env:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-          PASSPHRASE: ${{ secrets.PASSPHRASE }}
-        run: bash .github/scripts/import-gpg.sh
-      -
-        name: Publish to HCP Terraform
-        env:
-          GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
-          GPG_KEY_ID: ${{ steps.import_gpg.outputs.keyid }}
-          HCP_TERRAFORM_TOKEN: ${{ secrets.HCP_TERRAFORM_TOKEN }}
-          HCP_TERRAFORM_ORGANIZATION: ${{ vars.HCP_TERRAFORM_ORGANIZATION }}
-          HCP_TERRAFORM_HOSTNAME: ${{ vars.HCP_TERRAFORM_HOSTNAME }}
-        run: python3 .github/scripts/publish_hcp_provider.py
