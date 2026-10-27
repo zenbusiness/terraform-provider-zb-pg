@@ -1,23 +1,60 @@
-# This GitHub action can publish assets for release when a tag is created.
-# Currently its setup to run on any tag that matches the pattern "v*" (ie. v0.1.0).
+# Publish a tag of this private repository.
 #
-# This uses an action (paultyng/ghaction-import-gpg) that assumes you set your 
-# private key in the `GPG_PRIVATE_KEY` secret and passphrase in the `PASSPHRASE`
-# secret. If you would rather own your own GPG handling, please fork this action
-# or use an alternative one for key handling.
+# Pushing a tag that matches v* (for example v1.26.0-zb.1) builds and signs
+# the provider with GoReleaser, creates a GitHub Release, and uploads that
+# release to the HCP Terraform private registry.
 #
-# You will need to pass the `--batch` flag to `gpg` in your signing step 
-# in `goreleaser` to indicate this is being used in a non-interactive mode.
+# This workflow belongs only in the private repository. Do not push it to
+# zenbusiness/terraform-provider-postgresql-contrib.
+#
+# Repository variable:
+#   HCP_TERRAFORM_ORGANIZATION  HCP Terraform organization. The repository is
+#                               created with the placeholder REPLACE_ME.
+#                               Publishing fails until it is replaced.
+#   HCP_TERRAFORM_HOSTNAME      Optional. Defaults to app.terraform.io.
+#
+# Secrets, preferably on the publish environment:
+#   GPG_PRIVATE_KEY             ASCII-armored private key used to sign checksums.
+#   PASSPHRASE                  Passphrase for that key.
+#   HCP_TERRAFORM_TOKEN         Token for a team that can manage the private registry.
+#
+# Tag versions must not reuse an upstream release version. A rebuilt upstream
+# v1.26.0 has different checksums than the public provider.
 #
 name: release
 on:
   push:
     tags:
       - 'v*'
+permissions:
+  contents: write
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
+    environment: publish
     steps:
+      -
+        name: Check release configuration
+        env:
+          HCP_TERRAFORM_ORGANIZATION: ${{ vars.HCP_TERRAFORM_ORGANIZATION }}
+          HCP_TERRAFORM_TOKEN: ${{ secrets.HCP_TERRAFORM_TOKEN }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          PASSPHRASE: ${{ secrets.PASSPHRASE }}
+        run: |
+          missing=0
+          if [ -z "${HCP_TERRAFORM_ORGANIZATION}" ] || [ "${HCP_TERRAFORM_ORGANIZATION}" = "REPLACE_ME" ]; then
+            echo "Set the HCP_TERRAFORM_ORGANIZATION repository variable. It is still empty or REPLACE_ME."
+            missing=1
+          fi
+          for name in HCP_TERRAFORM_TOKEN GPG_PRIVATE_KEY PASSPHRASE; do
+            if [ -z "${!name}" ]; then
+              echo "Missing secret: ${name}"
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            exit 1
+          fi
       -
         name: Checkout
         uses: actions/checkout@v4
@@ -40,8 +77,37 @@ jobs:
         name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
-          version: latest
+          version: '~> v2'
           args: release --clean
         env:
           GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  publish-hcp:
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    environment: publish
+    steps:
+      -
+        name: Checkout
+        uses: actions/checkout@v4
+      -
+        name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release download "${GITHUB_REF_NAME}" --dir dist --clobber
+      -
+        name: Import GPG key
+        id: import_gpg
+        uses: crazy-max/ghaction-import-gpg@v6.1.0
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.PASSPHRASE }}
+      -
+        name: Publish to HCP Terraform
+        env:
+          GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
+          GPG_KEY_ID: ${{ steps.import_gpg.outputs.keyid }}
+          HCP_TERRAFORM_TOKEN: ${{ secrets.HCP_TERRAFORM_TOKEN }}
+          HCP_TERRAFORM_ORGANIZATION: ${{ vars.HCP_TERRAFORM_ORGANIZATION }}
+          HCP_TERRAFORM_HOSTNAME: ${{ vars.HCP_TERRAFORM_HOSTNAME }}
+        run: python3 .github/scripts/publish_hcp_provider.py
